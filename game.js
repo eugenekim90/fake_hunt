@@ -444,6 +444,19 @@
     }
   }
 
+  function resetKills(id) {
+    if (!id) return;
+    const row = scores.find((s) => s.id === id);
+    if (!row) return;
+    if (row.kills !== 0) {
+      row.kills = 0;
+      updateHud();
+    }
+    if (onlineMode && window.FHNet && id === FHNet.getMyId()) {
+      FHNet.updatePresenceKills(0);
+    }
+  }
+
   function worldFromScreen(sx, sy) {
     return {
       x: camera.x + (sx - width / 2),
@@ -522,6 +535,7 @@
       hit.alive = false;
       hit.respawnAt = hit === player ? 1.6 : hit.kind === "remote" ? 2.0 : 2.4;
       if (hit.ai) hit.ai.huntId = null;
+      resetKills(hit.id);
       addKill(attacker.id);
       if (onlineMode && isPlayerAtk && window.FHNet) {
         const youKills = (scores.find((s) => s.you) || {}).kills || 0;
@@ -541,6 +555,7 @@
         attacker.ai.huntId = null;
         attacker.ai.mode = "wander";
       }
+      resetKills(attacker.id);
       if (onlineMode && isPlayerAtk && window.FHNet) FHNet.sendDeath();
       if (announce) showToast("IT WAS A DUMMY…");
       if (isPlayerAtk && navigator.vibrate) navigator.vibrate([40, 40, 80]);
@@ -1554,12 +1569,14 @@
           showToast("GOT YOU!");
           if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
         }
+        resetKills(player.id);
       } else {
         const victim = entities.find((e) => e.id === p.victimId);
         if (victim && victim.alive) {
           victim.alive = false;
           victim.respawnAt = 2.0;
         }
+        resetKills(p.victimId);
       }
       if (p.killerId) {
         const row = scores.find((s) => s.id === p.killerId);
@@ -1579,6 +1596,7 @@
         remote.alive = false;
         remote.respawnAt = 1.6;
       }
+      resetKills(p.id);
     });
   }
 

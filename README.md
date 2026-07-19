@@ -1,6 +1,6 @@
-﻿# Fake Hunt
+# Fake Hunt
 
-**Fake Hunt** is a multiplayer social-deduction web game packaged with [Capacitor](https://capacitorjs.com/) for iOS and Android. Players join rooms, discuss, and vote to find the impostor.
+**Fake Hunt** is a multiplayer hunter arena web game packaged with [Capacitor](https://capacitorjs.com/) for iOS and Android. Everyone looks the same—some are real hunters, most are dummies. Move toward your finger, double-tap to swing: hit a real player to kill, hit a dummy and you die. Climb the kill count and leaderboard in Open World (shared server) or private rooms with bot/dummy settings.
 
 - **App ID:** `com.fakehunt.app`
 - **Repository:** [github.com/eugenekim90/fake_hunt](https://github.com/eugenekim90/fake_hunt)

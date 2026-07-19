@@ -1,0 +1,23 @@
+{
+  "name": "fake-hunt",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fake Hunt — Capacitor app (iOS / Android)",
+  "scripts": {
+    "build:web": "node scripts/sync-www.js",
+    "cap:sync": "npm run build:web && npx cap sync",
+    "android": "npm run cap:sync && npx cap open android",
+    "ios": "npm run cap:sync && npx cap open ios",
+    "add:platforms": "npx cap add android && npx cap add ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.2",
+    "@capacitor/core": "^7.4.2",
+    "@capacitor/ios": "^7.4.2",
+    "@capacitor/splash-screen": "^7.0.2",
+    "@capacitor/status-bar": "^7.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.2"
+  }
+}

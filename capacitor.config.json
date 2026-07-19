@@ -1,0 +1,18 @@
+{
+  "appId": "com.fakehunt.app",
+  "appName": "Fake Hunt",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "backgroundColor": "#0d1410"
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0d1410"
+    }
+  }
+}

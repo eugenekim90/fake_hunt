@@ -1,0 +1,34 @@
+﻿# Dependencies
+node_modules/
+
+# Android build outputs & secrets
+android/app/build/
+android/.gradle/
+android/build/
+android/captures/
+android/local.properties
+android/keystore.properties
+android/*.jks
+android/keystore/
+
+# iOS build outputs
+ios/App/Pods/
+ios/App/build/
+DerivedData/
+
+# Release artifacts (do not commit AABs)
+dist/*.aab
+
+# Environment
+.env
+.env.local
+
+# OS & logs
+.DS_Store
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+supabase/.temp/

@@ -127,6 +127,7 @@
             id: myId,
             name: myName,
             kills: 0,
+            best: 0,
             joinedAt: Date.now(),
             host: !!meta.host,
             open: roomCode === OPEN_CODE,
@@ -177,7 +178,7 @@
     channel.send({ type: "broadcast", event, payload });
   }
 
-  function sendState(player, kills) {
+  function sendState(player, kills, best) {
     if (!player || !player.alive) return;
     send("state", {
       id: myId,
@@ -187,6 +188,7 @@
       angle: player.angle,
       alive: player.alive,
       kills: kills || 0,
+      best: best || 0,
     });
   }
 
@@ -194,20 +196,26 @@
     send("swing", { id: myId, angle, x, y });
   }
 
-  function sendKill(victimId, killerKills) {
-    send("kill", { killerId: myId, victimId, kills: killerKills || 0 });
+  function sendKill(victimId, killerKills, killerBest) {
+    send("kill", {
+      killerId: myId,
+      victimId,
+      kills: killerKills || 0,
+      best: killerBest || 0,
+    });
   }
 
-  function sendDeath() {
-    send("death", { id: myId });
+  function sendDeath(best) {
+    send("death", { id: myId, best: best || 0, kills: 0 });
   }
 
-  function updatePresenceKills(kills) {
+  function updatePresenceKills(kills, best) {
     if (!channel || !online) return;
     channel.track({
       id: myId,
       name: myName,
       kills: kills || 0,
+      best: best || 0,
       joinedAt: Date.now(),
       open: roomCode === OPEN_CODE,
       config: roomMeta,

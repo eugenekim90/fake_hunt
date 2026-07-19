@@ -296,7 +296,7 @@
     const e = makeEntity(kind, uniqueName(), p.x, p.y);
     entities.push(e);
     if (kind === "human") {
-      scores.push({ id: e.id, name: e.name, kills: 0, you: false });
+      scores.push({ id: e.id, name: e.name, kills: 0, best: 0, you: false });
     }
     return e;
   }
@@ -391,7 +391,7 @@
 
     scores = entities
       .filter((e) => e.kind !== "fake")
-      .map((e) => ({ id: e.id, name: e.name, kills: 0, you: e.kind === "player" }));
+      .map((e) => ({ id: e.id, name: e.name, kills: 0, best: 0, you: e.kind === "player" }));
 
     updateHud();
     camera.x = player.x;
@@ -410,7 +410,7 @@
     e.speed = PLAYER_SPEED;
     entities.push(e);
     if (!scores.find((s) => s.id === id)) {
-      scores.push({ id, name: e.name, kills: 0, you: false });
+      scores.push({ id, name: e.name, kills: 0, best: 0, you: false });
       updateHud();
     }
     return e;
@@ -427,19 +427,30 @@
     const you = scores.find((s) => s.you);
     killsEl.textContent = String(you ? you.kills : 0);
 
-    const ranked = [...scores].sort((a, b) => b.kills - a.kills).slice(0, 8);
+    const ranked = [...scores].sort((a, b) => (b.best || 0) - (a.best || 0) || b.kills - a.kills).slice(0, 8);
     lbList.innerHTML = ranked
       .map(
         (s, i) =>
-          `<li class="${s.you ? "you" : ""}"><span>${i + 1}. ${s.name}</span><span>${s.kills}</span></li>`
+          `<li class="${s.you ? "you" : ""}"><span>${i + 1}. ${s.name}</span><span>${s.best || 0}</span></li>`
       )
       .join("");
+  }
+
+  function applyScoreStats(id, { kills, best } = {}) {
+    const row = scores.find((s) => s.id === id);
+    if (!row) return;
+    if (typeof kills === "number") row.kills = kills;
+    if (typeof best === "number") row.best = Math.max(row.best || 0, best);
+    // never let best fall behind current life
+    row.best = Math.max(row.best || 0, row.kills || 0);
+    updateHud();
   }
 
   function addKill(killerId) {
     const row = scores.find((s) => s.id === killerId);
     if (row) {
       row.kills += 1;
+      if (row.kills > (row.best || 0)) row.best = row.kills;
       updateHud();
     }
   }
@@ -448,13 +459,20 @@
     if (!id) return;
     const row = scores.find((s) => s.id === id);
     if (!row) return;
+    // current life resets; personal best stays on the leaderboard
     if (row.kills !== 0) {
+      row.best = Math.max(row.best || 0, row.kills);
       row.kills = 0;
       updateHud();
     }
     if (onlineMode && window.FHNet && id === FHNet.getMyId()) {
-      FHNet.updatePresenceKills(0);
+      FHNet.updatePresenceKills(0, row.best || 0);
     }
+  }
+
+  function myScorePair() {
+    const you = scores.find((s) => s.you) || {};
+    return { kills: you.kills || 0, best: you.best || 0 };
   }
 
   function worldFromScreen(sx, sy) {
@@ -538,9 +556,9 @@
       resetKills(hit.id);
       addKill(attacker.id);
       if (onlineMode && isPlayerAtk && window.FHNet) {
-        const youKills = (scores.find((s) => s.you) || {}).kills || 0;
-        FHNet.sendKill(hit.id, youKills);
-        FHNet.updatePresenceKills(youKills);
+        const me = myScorePair();
+        FHNet.sendKill(hit.id, me.kills, me.best);
+        FHNet.updatePresenceKills(me.kills, me.best);
       }
       if (announce || hit === player) {
         showToast(hit === player ? "GOT YOU!" : "KILL");
@@ -556,7 +574,10 @@
         attacker.ai.mode = "wander";
       }
       resetKills(attacker.id);
-      if (onlineMode && isPlayerAtk && window.FHNet) FHNet.sendDeath();
+      if (onlineMode && isPlayerAtk && window.FHNet) {
+        const me = myScorePair();
+        FHNet.sendDeath(me.best);
+      }
       if (announce) showToast("IT WAS A DUMMY…");
       if (isPlayerAtk && navigator.vibrate) navigator.vibrate([40, 40, 80]);
     }
@@ -964,8 +985,8 @@
       netSendAcc += dt;
       if (netSendAcc >= 0.05) {
         netSendAcc = 0;
-        const youKills = (scores.find((s) => s.you) || {}).kills || 0;
-        FHNet.sendState(player, youKills);
+        const me = myScorePair();
+        FHNet.sendState(player, me.kills, me.best);
       }
     }
   }
@@ -1508,10 +1529,10 @@
           if (!m || !m.id || m.id === FHNet.getMyId()) continue;
           seen.add(m.id);
           const remote = ensureRemote(m.id, m.name);
-          if (typeof m.kills === "number") {
-            const row = scores.find((s) => s.id === m.id);
-            if (row) row.kills = m.kills;
-          }
+          applyScoreStats(m.id, {
+            kills: typeof m.kills === "number" ? m.kills : undefined,
+            best: typeof m.best === "number" ? m.best : m.kills,
+          });
           remote._netSeen = performance.now();
         }
       }
@@ -1541,13 +1562,10 @@
       } else if (p.alive !== false) {
         remote.alive = true;
       }
-      if (typeof p.kills === "number") {
-        const row = scores.find((s) => s.id === p.id);
-        if (row) {
-          row.kills = p.kills;
-          updateHud();
-        }
-      }
+      applyScoreStats(p.id, {
+        kills: typeof p.kills === "number" ? p.kills : undefined,
+        best: typeof p.best === "number" ? p.best : undefined,
+      });
     });
 
     FHNet.on("swing", (p) => {
@@ -1579,11 +1597,12 @@
         resetKills(p.victimId);
       }
       if (p.killerId) {
-        const row = scores.find((s) => s.id === p.killerId);
-        if (row && typeof p.kills === "number") {
-          row.kills = p.kills;
-          updateHud();
-        } else if (row) {
+        if (typeof p.kills === "number" || typeof p.best === "number") {
+          applyScoreStats(p.killerId, {
+            kills: typeof p.kills === "number" ? p.kills : undefined,
+            best: typeof p.best === "number" ? p.best : p.kills,
+          });
+        } else {
           addKill(p.killerId);
         }
       }
@@ -1596,6 +1615,11 @@
         remote.alive = false;
         remote.respawnAt = 1.6;
       }
+      // keep best; only wipe current life
+      applyScoreStats(p.id, {
+        kills: 0,
+        best: typeof p.best === "number" ? p.best : undefined,
+      });
       resetKills(p.id);
     });
   }

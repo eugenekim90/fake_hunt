@@ -148,10 +148,63 @@
     return d;
   }
 
-  function showToast(text, ms = 900) {
+  function showToast(text, ms = 1400) {
     toastEl.textContent = text;
     toastEl.classList.add("show");
     toastTimer = ms / 1000;
+  }
+
+  function displayName(e) {
+    if (!e) return "???";
+    if (e === player) return player.name || "YOU";
+    return e.name || "???";
+  }
+
+  function nameById(id) {
+    if (!id) return "???";
+    if (player && player.id === id) return player.name || "YOU";
+    const e = entities.find((x) => x.id === id);
+    if (e) return e.name || "???";
+    const s = scores.find((x) => x.id === id);
+    return (s && s.name) || "???";
+  }
+
+  const KILL_LINES = [
+    (a, b) => `${a} bonked ${b}!`,
+    (a, b) => `${a} got ${b}!`,
+    (a, b) => `${a} drumsticked ${b}`,
+    (a, b) => `${a} yeeted ${b}`,
+    (a, b) => `${b} got cooked by ${a}`,
+    (a, b) => `${a} said bye to ${b}`,
+    (a, b) => `${a} cleaned ${b}`,
+  ];
+
+  const DUMMY_LINES = [
+    (n) => `DUMMY!!! — ${n} fell for it`,
+    (n) => `${n} hit a DUMMY lol`,
+    (n) => `Oops ${n}… that was a DUMMY`,
+    (n) => `DUMMY! Nice swing, ${n}`,
+    (n) => `${n} trusted the chicken. Bad idea.`,
+    (n) => `Get dunked ${n} — DUMMY!`,
+  ];
+
+  const GOTCHA_LINES = [
+    (a) => `${a} got YOU!`,
+    (a) => `Bonked by ${a}!`,
+    (a) => `${a} says gotcha`,
+  ];
+
+  function pickLine(pool, ...args) {
+    const fn = pool[(Math.random() * pool.length) | 0];
+    return fn(...args);
+  }
+
+  function announceFeed(line, ms = 1800, net = false) {
+    if (!line) return;
+    showToast(line, ms);
+    if (net && onlineMode && window.FHNet && FHNet.sendFeed) {
+      FHNet.sendFeed(line);
+    }
   }
 
   function makeEntity(kind, name, x, y) {
@@ -171,6 +224,7 @@
       swingCd: 0,
       swingAnim: 0,
       walkPhase: rand(0, Math.PI * 2),
+      walkStyle: (rng() * 3) | 0, // silly gait variants
       // AI memory
       ai: {
         mode: "wander",
@@ -555,14 +609,27 @@
       if (hit.ai) hit.ai.huntId = null;
       resetKills(hit.id);
       addKill(attacker.id);
+
+      const killerN = displayName(attacker);
+      const victimN = displayName(hit);
+      const line =
+        hit === player
+          ? pickLine(GOTCHA_LINES, killerN)
+          : pickLine(KILL_LINES, killerN, victimN);
+
       if (onlineMode && isPlayerAtk && window.FHNet) {
         const me = myScorePair();
-        FHNet.sendKill(hit.id, me.kills, me.best);
+        FHNet.sendKill(hit.id, me.kills, me.best, {
+          killerName: killerN,
+          victimName: victimN,
+          line,
+        });
         FHNet.updatePresenceKills(me.kills, me.best);
       }
-      if (announce || hit === player) {
-        showToast(hit === player ? "GOT YOU!" : "KILL");
-      }
+
+      // global comic feed — no name tags, this is how you know who did what
+      announceFeed(line, 1900, false);
+
       if (hit === player && navigator.vibrate) navigator.vibrate([50, 30, 50]);
       else if (isPlayerAtk && navigator.vibrate) navigator.vibrate(30);
     } else if (hit.kind === "fake") {
@@ -574,11 +641,16 @@
         attacker.ai.mode = "wander";
       }
       resetKills(attacker.id);
+      const dummyLine = pickLine(DUMMY_LINES, displayName(attacker));
       if (onlineMode && isPlayerAtk && window.FHNet) {
         const me = myScorePair();
-        FHNet.sendDeath(me.best);
+        FHNet.sendDeath(me.best, {
+          name: displayName(attacker),
+          reason: "dummy",
+          line: dummyLine,
+        });
       }
-      if (announce) showToast("IT WAS A DUMMY…");
+      announceFeed(dummyLine, 2000, false);
       if (isPlayerAtk && navigator.vibrate) navigator.vibrate([40, 40, 80]);
     }
   }
@@ -909,7 +981,7 @@
     e.x = clamp(e.x + e.vx * dt, 24, WORLD - 24);
     e.y = clamp(e.y + e.vy * dt, 24, WORLD - 24);
     const spd = Math.hypot(e.vx, e.vy);
-    e.walkPhase += dt * (spd > 8 ? 10 : 2);
+    e.walkPhase += dt * (spd > 8 ? 14 : 2.4);
 
     const huntId = e.ai && e.ai.mode === "hunt" ? e.ai.huntId : null;
 
@@ -1072,75 +1144,65 @@
     drawSphere(x2, y2, width * 0.55, color);
   }
 
-  function drawClub(pivotX, pivotY, swingT, skin) {
-    // swingT: 0 idle, 1 mid-swing forward
-    const lift = -0.75 + swingT * 1.7;
-    const reach = 4 + swingT * 10;
+  function drawDrumstick(pivotX, pivotY, swingT) {
+    // swingT: 0 idle, 1 mid-swing forward — comedy chicken leg weapon
+    const lift = -0.9 + swingT * 1.85;
+    const reach = 3 + swingT * 9;
 
     ctx.save();
     ctx.translate(pivotX, pivotY);
     ctx.rotate(lift);
 
-    // wooden handle
-    const handleGrad = ctx.createLinearGradient(0, -2, 18, 2);
-    handleGrad.addColorStop(0, "#8a5a32");
-    handleGrad.addColorStop(0.5, "#6b4226");
-    handleGrad.addColorStop(1, "#4a2c16");
-    ctx.strokeStyle = handleGrad;
-    ctx.lineWidth = 4.5;
+    // bone
+    ctx.strokeStyle = "#f2e6c8";
+    ctx.lineWidth = 3.6;
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(16 + reach * 0.2, -1);
+    ctx.lineTo(14 + reach * 0.15, -1);
     ctx.stroke();
 
-    // wrap near hand
-    ctx.strokeStyle = shade(skin, -40);
-    ctx.lineWidth = 5.5;
+    // knuckle knobs
+    drawSphere(1, 0.5, 2.6, "#efe0ba");
+    drawSphere(0, -1.2, 2.2, "#e8d7ae");
+
+    // juicy drum meat
+    const cx = 24 + reach * 0.3;
+    const cy = -2;
+    const meat = ctx.createRadialGradient(cx - 4, cy - 5, 2, cx, cy, 13);
+    meat.addColorStop(0, "#f0b070");
+    meat.addColorStop(0.35, "#d47838");
+    meat.addColorStop(0.75, "#a84818");
+    meat.addColorStop(1, "#6a2a0c");
+    ctx.fillStyle = meat;
     ctx.beginPath();
-    ctx.moveTo(1, 0);
-    ctx.lineTo(7, -0.5);
+    ctx.ellipse(cx, cy, 13, 9.5, 0.25, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#5a2208";
+    ctx.lineWidth = 1.15;
     ctx.stroke();
 
-    // chubby club head
-    const cx = 26 + reach * 0.35;
-    const cy = -3;
-    const clubGrad = ctx.createRadialGradient(cx - 5, cy - 6, 2, cx, cy, 14);
-    clubGrad.addColorStop(0, "#f0c090");
-    clubGrad.addColorStop(0.4, "#d4924a");
-    clubGrad.addColorStop(1, "#7a4318");
-    ctx.fillStyle = clubGrad;
+    // crispy bits
+    ctx.fillStyle = "rgba(255,220,140,0.45)";
     ctx.beginPath();
-    ctx.ellipse(cx, cy, 14, 10.5, 0.2, 0, Math.PI * 2);
+    ctx.ellipse(cx - 3, cy - 3.5, 4.5, 2.4, -0.5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = "#5a3010";
-    ctx.lineWidth = 1.2;
+    ctx.fillStyle = "rgba(90,30,10,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(cx + 3, cy + 2, 3.2, 1.6, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // silly little face on the meat
+    ctx.fillStyle = "#3a1a08";
+    ctx.beginPath();
+    ctx.arc(cx - 2.5, cy - 0.5, 1.15, 0, Math.PI * 2);
+    ctx.arc(cx + 3.2, cy - 1, 1.15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#3a1a08";
+    ctx.lineWidth = 1.05;
+    ctx.beginPath();
+    ctx.arc(cx + 0.4, cy + 1.6, 2.6, 0.15, Math.PI - 0.15);
     ctx.stroke();
-
-    // highlight
-    ctx.fillStyle = "rgba(255,240,210,0.5)";
-    ctx.beginPath();
-    ctx.ellipse(cx - 4, cy - 4, 5.5, 3, -0.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // cute face on club
-    ctx.fillStyle = "#3a2210";
-    ctx.beginPath();
-    ctx.arc(cx - 3, cy - 1, 1.3, 0, Math.PI * 2);
-    ctx.arc(cx + 4, cy - 1.5, 1.3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#3a2210";
-    ctx.lineWidth = 1.1;
-    ctx.beginPath();
-    ctx.arc(cx + 0.5, cy + 1.5, 3, 0.2, Math.PI - 0.2);
-    ctx.stroke();
-
-    // blush
-    ctx.fillStyle = "rgba(255,120,140,0.4)";
-    ctx.beginPath();
-    ctx.ellipse(cx - 6, cy + 2, 2.4, 1.3, 0, 0, Math.PI * 2);
-    ctx.ellipse(cx + 7, cy + 1.5, 2.4, 1.3, 0, 0, Math.PI * 2);
-    ctx.fill();
 
     ctx.restore();
   }
@@ -1150,14 +1212,46 @@
     const skin = isYou ? "#8dffb0" : "#e4eee8";
     const limb = isYou ? "#4eaa78" : "#8f9f96";
     const outline = isYou ? "#1d4a34" : "#2a3530";
-    const moving = Math.hypot(e.vx, e.vy) > 20;
-    const bob = moving ? Math.sin(e.walkPhase) * 1.6 : 0;
-    const stride = moving ? Math.sin(e.walkPhase) * 5.5 : 0;
-    const stride2 = moving ? Math.cos(e.walkPhase) * 5.5 : 0;
+    const moving = Math.hypot(e.vx, e.vy) > 18;
+    const style = e.walkStyle || 0;
+    const ph = e.walkPhase;
+
+    // comedy gaits: waddle / moonwalk / chicken strut
+    let bob = 0;
+    let stride = 0;
+    let stride2 = 0;
+    let lean = 0;
+    let squat = 0;
+    let spinExtra = 0;
+    if (moving) {
+      if (style === 0) {
+        // fat waddle
+        bob = Math.abs(Math.sin(ph)) * 2.8;
+        stride = Math.sin(ph) * 7.5;
+        stride2 = Math.sin(ph + Math.PI) * 7.5;
+        lean = Math.sin(ph) * 0.18;
+        squat = Math.abs(Math.sin(ph)) * 1.4;
+      } else if (style === 1) {
+        // moonwalk-ish: feet slip opposite of lean
+        bob = Math.sin(ph * 2) * 1.2;
+        stride = Math.sin(ph) * -6.8;
+        stride2 = Math.cos(ph) * -6.8;
+        lean = Math.sin(ph * 0.5) * 0.12;
+        spinExtra = Math.sin(ph) * 0.08;
+      } else {
+        // chicken strut
+        bob = Math.abs(Math.sin(ph * 2)) * 3.2;
+        stride = Math.sin(ph) * 9;
+        stride2 = Math.sin(ph + 1.1) * 5;
+        lean = 0.1 + Math.sin(ph) * 0.14;
+        squat = Math.sin(ph * 2) * 1.1;
+      }
+    }
 
     let swingT = 0;
+    const swingDur = 0.22;
     if (e.swingAnim > 0) {
-      swingT = Math.sin(clamp(1 - e.swingAnim / 0.18, 0, 1) * Math.PI);
+      swingT = Math.sin(clamp(1 - e.swingAnim / swingDur, 0, 1) * Math.PI);
     } else if (swingFx && e === player && swingFx.t > 0) {
       swingT = Math.sin(clamp(1 - swingFx.t / 0.18, 0, 1) * Math.PI);
     }
@@ -1170,78 +1264,83 @@
     // soft contact shadow
     ctx.fillStyle = "rgba(0,0,0,0.32)";
     ctx.beginPath();
-    ctx.ellipse(0, 14 * scale, 16 * scale, 6 * scale, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 14 * scale, (15 + Math.abs(lean) * 4) * scale, 5.5 * scale, 0, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.scale(scale, scale);
-    ctx.rotate(e.angle + Math.PI / 2);
-    ctx.translate(0, bob);
+    ctx.rotate(e.angle + Math.PI / 2 + spinExtra);
+    ctx.translate(lean * 4, bob + squat * 0.3);
 
-    // legs (behind)
-    drawLimb(-1, 6, -5 - stride * 0.15, 20 + Math.abs(stride) * 0.1, 5, limb);
-    drawLimb(1, 6, 5 + stride2 * 0.15, 20 + Math.abs(stride2) * 0.1, 5, limb);
-    // shoes as little spheres
-    drawSphere(-5 - stride * 0.15, 20, 3.2, shade(limb, -25));
-    drawSphere(5 + stride2 * 0.15, 20, 3.2, shade(limb, -25));
+    // silly knee flaps
+    const kneeKick = moving ? Math.max(0, Math.sin(ph)) * 3.5 : 0;
+    drawLimb(-1.5, 6, -6 - stride * 0.2, 19 + Math.abs(stride) * 0.12 + kneeKick, 5.2, limb);
+    drawLimb(1.5, 6, 6 + stride2 * 0.2, 19 + Math.abs(stride2) * 0.12, 5.2, limb);
+    drawSphere(-6 - stride * 0.2, 19.5 + kneeKick * 0.3, 3.4, shade(limb, -25));
+    drawSphere(6 + stride2 * 0.2, 19.5, 3.4, shade(limb, -25));
 
-    // torso with rim light
+    // chubby torso, tipped
+    ctx.save();
+    ctx.rotate(lean * 0.55);
     const torsoGrad = ctx.createLinearGradient(-8, -12, 10, 10);
     torsoGrad.addColorStop(0, shade(skin, 55));
     torsoGrad.addColorStop(0.45, skin);
     torsoGrad.addColorStop(1, shade(skin, -50));
     ctx.fillStyle = torsoGrad;
-    roundRectPath(-7, -10, 14, 20, 6);
+    roundRectPath(-7.5, -10 + squat * 0.2, 15, 20 - squat * 0.15, 7);
     ctx.fill();
     ctx.strokeStyle = outline;
     ctx.lineWidth = 1.4;
     ctx.stroke();
 
-    // belly highlight
     ctx.fillStyle = "rgba(255,255,255,0.18)";
     ctx.beginPath();
     ctx.ellipse(-1.5, -1, 3.5, 5, -0.2, 0, Math.PI * 2);
     ctx.fill();
 
-    // back arm
-    drawLimb(-3, -2, -10 - stride * 0.2, 8, 4.2, limb);
+    // back arm flapping
+    const flap = moving ? Math.sin(ph + 0.8) * 4 : 0;
+    drawLimb(-3, -2, -11 - stride * 0.15, 7 + flap, 4.2, limb);
 
-    // front arm + club
-    const handX = 9 + swingT * 4;
-    const handY = -2 - swingT * 6;
+    // front arm + drumstick
+    const handX = 9 + swingT * 5;
+    const handY = -2 - swingT * 7;
     drawLimb(3, -3, handX, handY, 4.4, limb);
-    drawClub(handX, handY, swingT, skin);
+    drawDrumstick(handX, handY, swingT);
 
-    // head sphere
-    drawSphere(0, -20, 11.5, skin);
+    // head — slightly oversized / tippy
+    const headY = -20 - Math.abs(lean) * 1.5;
+    drawSphere(lean * 2, headY, 12, skin);
     ctx.strokeStyle = outline;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
-    ctx.arc(0, -20, 11.5, 0, Math.PI * 2);
+    ctx.arc(lean * 2, headY, 12, 0, Math.PI * 2);
     ctx.stroke();
 
-    // face
+    // goofy face
     ctx.save();
-    ctx.translate(0, -20);
+    ctx.translate(lean * 2, headY);
+    ctx.rotate(lean * 0.4);
     ctx.fillStyle = "#1a2420";
     ctx.beginPath();
-    ctx.arc(-3.8, -0.8, 1.55, 0, Math.PI * 2);
-    ctx.arc(3.8, -0.8, 1.55, 0, Math.PI * 2);
+    ctx.ellipse(-3.6, -0.6, 1.7, 2.1, 0, 0, Math.PI * 2);
+    ctx.ellipse(3.6, -0.6, 1.7, 2.1, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.beginPath();
-    ctx.arc(-3.2, -1.4, 0.65, 0, Math.PI * 2);
-    ctx.arc(4.4, -1.4, 0.65, 0, Math.PI * 2);
+    ctx.arc(-3.0, -1.3, 0.7, 0, Math.PI * 2);
+    ctx.arc(4.2, -1.3, 0.7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255, 120, 140, 0.4)";
+    ctx.fillStyle = "rgba(255, 120, 140, 0.45)";
     ctx.beginPath();
-    ctx.ellipse(-6.2, 2.4, 2.6, 1.4, 0, 0, Math.PI * 2);
-    ctx.ellipse(6.2, 2.4, 2.6, 1.4, 0, 0, Math.PI * 2);
+    ctx.ellipse(-6.4, 2.6, 2.8, 1.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(6.4, 2.6, 2.8, 1.5, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = "#1a2420";
-    ctx.lineWidth = 1.25;
+    // open cartoon mouth
+    ctx.fillStyle = "#1a2420";
     ctx.beginPath();
-    ctx.arc(0, 1.8, 3.1, 0.15, Math.PI - 0.15);
-    ctx.stroke();
+    ctx.ellipse(0, 3.2, 2.6, 2.1 + (moving ? Math.abs(Math.sin(ph)) * 0.8 : 0), 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
     ctx.restore();
 
     ctx.restore();
@@ -1252,20 +1351,8 @@
     const sx = width / 2 + (e.x - camera.x);
     const sy = height / 2 + (e.y - camera.y);
     if (sx < -60 || sy < -60 || sx > width + 60 || sy > height + 60) return;
-
+    // no name tags — everyone looks the same; feeds reveal kills
     drawStickman(e, sx, sy);
-
-    if (e === player) {
-      ctx.fillStyle = "rgba(232,240,234,0.85)";
-      ctx.font = "12px Segoe UI, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(onlineMode ? e.name || "YOU" : "YOU", sx, sy - 52);
-    } else if (e.kind === "remote") {
-      ctx.fillStyle = "rgba(180,220,255,0.85)";
-      ctx.font = "11px Segoe UI, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(e.name || "?", sx, sy - 52);
-    }
   }
 
   function drawSwing() {
@@ -1584,7 +1671,6 @@
         if (player.alive) {
           player.alive = false;
           player.respawnAt = 1.6;
-          showToast("GOT YOU!");
           if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
         }
         resetKills(player.id);
@@ -1606,6 +1692,19 @@
           addKill(p.killerId);
         }
       }
+      // skip echo of our own broadcast — we already toasted locally
+      if (p.killerId !== FHNet.getMyId()) {
+        const line =
+          p.line ||
+          (p.victimId === (player && player.id)
+            ? pickLine(GOTCHA_LINES, p.killerName || nameById(p.killerId))
+            : pickLine(
+                KILL_LINES,
+                p.killerName || nameById(p.killerId),
+                p.victimName || nameById(p.victimId)
+              ));
+        announceFeed(line, 1900);
+      }
     });
 
     FHNet.on("death", (p) => {
@@ -1615,12 +1714,21 @@
         remote.alive = false;
         remote.respawnAt = 1.6;
       }
-      // keep best; only wipe current life
       applyScoreStats(p.id, {
         kills: 0,
         best: typeof p.best === "number" ? p.best : undefined,
       });
       resetKills(p.id);
+      if (p.line) announceFeed(p.line, 2000);
+      else if (p.reason === "dummy") {
+        announceFeed(pickLine(DUMMY_LINES, p.name || nameById(p.id)), 2000);
+      }
+    });
+
+    FHNet.on("feed", (p) => {
+      if (!onlineMode || !running || !p || !p.line) return;
+      if (p.id === FHNet.getMyId()) return;
+      announceFeed(p.line, 1800);
     });
   }
 

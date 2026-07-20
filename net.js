@@ -21,6 +21,7 @@
     sync: [],
     status: [],
     config: [],
+    feed: [],
   };
 
   function emit(type, payload) {
@@ -120,6 +121,11 @@
       emit("config", payload);
     });
 
+    channel.on("broadcast", { event: "feed" }, ({ payload }) => {
+      if (!payload || !payload.line) return;
+      emit("feed", payload);
+    });
+
     await new Promise((resolve, reject) => {
       channel.subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
@@ -196,17 +202,31 @@
     send("swing", { id: myId, angle, x, y });
   }
 
-  function sendKill(victimId, killerKills, killerBest) {
+  function sendKill(victimId, killerKills, killerBest, meta = {}) {
     send("kill", {
       killerId: myId,
       victimId,
       kills: killerKills || 0,
       best: killerBest || 0,
+      killerName: meta.killerName || myName,
+      victimName: meta.victimName || null,
+      line: meta.line || null,
     });
   }
 
-  function sendDeath(best) {
-    send("death", { id: myId, best: best || 0, kills: 0 });
+  function sendDeath(best, meta = {}) {
+    send("death", {
+      id: myId,
+      best: best || 0,
+      kills: 0,
+      name: meta.name || myName,
+      reason: meta.reason || null,
+      line: meta.line || null,
+    });
+  }
+
+  function sendFeed(line) {
+    send("feed", { id: myId, line });
   }
 
   function updatePresenceKills(kills, best) {
@@ -260,6 +280,7 @@
     sendSwing,
     sendKill,
     sendDeath,
+    sendFeed,
     updatePresenceKills,
     countPlayers,
     extractRoomConfig,

@@ -30,18 +30,18 @@
   const PERSONAL_SPACE = 100;
   const HARD_SEP = 58;
 
-  // Open world presets — scales with joined real players
+  // Open world presets — bot counts scale; map size stays FIXED so everyone shares coords
   const OPEN_PRESET = {
-    baseWorld: 2400,
+    baseWorld: 3200,
     baseHumans: 6,
     baseFakes: 20,
-    perPlayerWorld: 220,
     perPlayerHumans: 1,
     perPlayerFakes: 5,
-    maxWorld: 5000,
     maxHumans: 18,
     maxFakes: 70,
   };
+  const HUB_X = 1600;
+  const HUB_Y = 1600;
 
   const NAMES = [
     "YOU",
@@ -316,13 +316,10 @@
         fakes: clampInt(cfg.dummies, 5, 80),
       };
     }
-    // open world (and local preview) — scale with real players
+    // open world — fixed map so all clients share the same coordinates
     const n = Math.max(1, playerCount | 0);
     return {
-      world: Math.min(
-        OPEN_PRESET.maxWorld,
-        OPEN_PRESET.baseWorld + (n - 1) * OPEN_PRESET.perPlayerWorld
-      ),
+      world: OPEN_PRESET.baseWorld,
       humans: Math.min(
         OPEN_PRESET.maxHumans,
         OPEN_PRESET.baseHumans + (n - 1) * OPEN_PRESET.perPlayerHumans
@@ -331,6 +328,13 @@
         OPEN_PRESET.maxFakes,
         OPEN_PRESET.baseFakes + (n - 1) * OPEN_PRESET.perPlayerFakes
       ),
+    };
+  }
+
+  function hubPoint() {
+    return {
+      x: clamp(HUB_X, 120, WORLD - 120),
+      y: clamp(HUB_Y, 120, WORLD - 120),
     };
   }
 
@@ -425,8 +429,10 @@
     WORLD = desired.world;
 
     entities.length = 0;
-    const px = WORLD * 0.5;
-    const py = WORLD * 0.5;
+    const hub = hubPoint();
+    // Online: everyone starts at the same hub so you actually meet
+    const px = onlineMode ? hub.x + rand(-40, 40) : WORLD * 0.5;
+    const py = onlineMode ? hub.y + rand(-40, 40) : WORLD * 0.5;
     const myName =
       opts.name ||
       (window.FHNet && FHNet.getMyName && FHNet.getMyName()) ||
@@ -457,29 +463,37 @@
     if (e) {
       if (name) e.name = name;
       if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+        e.netX = pos.x;
+        e.netY = pos.y;
         e.x = pos.x;
         e.y = pos.y;
+        e.vx = 0;
+        e.vy = 0;
         if (typeof pos.angle === "number") e.angle = pos.angle;
+        e._netSeen = performance.now();
       }
       return e;
     }
-    // Spawn near local player / center so same-room mates aren't lost off-map
+    const hub = hubPoint();
     let x;
     let y;
     if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
       x = pos.x;
       y = pos.y;
-    } else if (player) {
-      x = clamp(player.x + rand(-120, 120), 80, WORLD - 80);
-      y = clamp(player.y + rand(-120, 120), 80, WORLD - 80);
     } else {
-      x = WORLD * 0.5 + rand(-80, 80);
-      y = WORLD * 0.5 + rand(-80, 80);
+      // Unknown pos → hub (same meeting point), NOT random map corners
+      x = hub.x + rand(-50, 50);
+      y = hub.y + rand(-50, 50);
     }
     e = makeEntity("remote", name || "guest", x, y);
     e.id = id;
     e.speed = PLAYER_SPEED;
+    e.netX = x;
+    e.netY = y;
+    e.vx = 0;
+    e.vy = 0;
     if (pos && typeof pos.angle === "number") e.angle = pos.angle;
+    e._netSeen = performance.now();
     entities.push(e);
     if (!scores.find((s) => s.id === id)) {
       scores.push({ id, name: e.name, kills: 0, best: 0, you: false });
@@ -688,13 +702,20 @@
   }
 
   function respawnEntity(e) {
-    const p = spawnSpread(e === player ? 80 : 200);
-    e.x = e === player ? WORLD * 0.5 + rand(-80, 80) : p.x;
-    e.y = e === player ? WORLD * 0.5 + rand(-80, 80) : p.y;
-    if (e === player) {
-      e.x = clamp(e.x, 80, WORLD - 80);
-      e.y = clamp(e.y, 80, WORLD - 80);
+    if (e === player && onlineMode) {
+      const hub = hubPoint();
+      e.x = hub.x + rand(-40, 40);
+      e.y = hub.y + rand(-40, 40);
+    } else if (e === player) {
+      e.x = WORLD * 0.5 + rand(-80, 80);
+      e.y = WORLD * 0.5 + rand(-80, 80);
+    } else {
+      const p = spawnSpread(200);
+      e.x = p.x;
+      e.y = p.y;
     }
+    e.x = clamp(e.x, 80, WORLD - 80);
+    e.y = clamp(e.y, 80, WORLD - 80);
     e.alive = true;
     e.vx = 0;
     e.vy = 0;
@@ -1060,6 +1081,18 @@
         if (e.respawnAt <= 0) respawnEntity(e);
         continue;
       }
+      if (e.kind === "remote") {
+        // Network-authoritative — never local-physics them away from real coords
+        e.vx = 0;
+        e.vy = 0;
+        if (typeof e.netX === "number" && typeof e.netY === "number") {
+          e.x += (e.netX - e.x) * Math.min(1, 14 * dt);
+          e.y += (e.netY - e.y) * Math.min(1, 14 * dt);
+        }
+        e.swingAnim = Math.max(0, e.swingAnim - dt);
+        e.walkPhase += dt * 8;
+        continue;
+      }
       if (e.kind !== "player") updateAi(e, dt);
       else {
         e.swingAnim = Math.max(0, e.swingAnim - dt);
@@ -1078,10 +1111,10 @@
         const me = myScorePair();
         FHNet.sendState(player, me.kills, me.best);
       }
-      // Presence backup every ~0.4s so late joiners always get positions
+      // Presence is the reliable same-room position channel (broadcast can be filtered)
       if (!player._netPresenceAcc) player._netPresenceAcc = 0;
       player._netPresenceAcc += dt;
-      if (player._netPresenceAcc >= 0.4) {
+      if (player._netPresenceAcc >= 0.12) {
         player._netPresenceAcc = 0;
         const me = myScorePair();
         FHNet.updatePresenceKills(me.kills, me.best, player);
@@ -1378,8 +1411,55 @@
     const sx = width / 2 + (e.x - camera.x);
     const sy = height / 2 + (e.y - camera.y);
     if (sx < -60 || sy < -60 || sx > width + 60 || sy > height + 60) return;
-    // no name tags — everyone looks the same; feeds reveal kills
     drawStickman(e, sx, sy);
+    // Online remotes: show name so you can actually find each other
+    if (onlineMode && e.kind === "remote") {
+      ctx.save();
+      ctx.font = "600 12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(180, 255, 210, 0.95)";
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 3;
+      ctx.strokeText(e.name || "player", sx, sy - 56);
+      ctx.fillText(e.name || "player", sx, sy - 56);
+      ctx.beginPath();
+      ctx.arc(sx, sy + 10, 16, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(120, 220, 170, 0.55)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawRemoteArrows() {
+    if (!onlineMode || !player) return;
+    for (const e of entities) {
+      if (e.kind !== "remote" || !e.alive) continue;
+      const sx = width / 2 + (e.x - camera.x);
+      const sy = height / 2 + (e.y - camera.y);
+      const onScreen = sx >= 40 && sy >= 40 && sx <= width - 40 && sy <= height - 40;
+      if (onScreen) continue;
+      const ang = Math.atan2(e.y - camera.y, e.x - camera.x);
+      const edgeX = clamp(sx, 28, width - 28);
+      const edgeY = clamp(sy, 28, height - 28);
+      ctx.save();
+      ctx.translate(edgeX, edgeY);
+      ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-8, 7);
+      ctx.lineTo(-8, -7);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(141, 255, 176, 0.9)";
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.font = "600 11px system-ui, sans-serif";
+      ctx.fillStyle = "rgba(200, 255, 220, 0.9)";
+      ctx.textAlign = "center";
+      ctx.fillText(e.name || "?", edgeX, edgeY - 14);
+      ctx.restore();
+    }
   }
 
   function drawSwing() {
@@ -1413,6 +1493,7 @@
     const sorted = entities.filter((e) => e.alive).sort((a, b) => a.y - b.y);
     for (const e of sorted) drawEntity(e);
     drawSwing();
+    drawRemoteArrows();
 
     if (input.active && player && player.alive) {
       ctx.beginPath();
@@ -1520,7 +1601,11 @@
       }
     }
     for (const e of [...entities]) {
-      if (e.kind === "remote" && !seen.has(e.id)) removeRemote(e.id);
+      if (e.kind !== "remote") continue;
+      if (seen.has(e.id)) continue;
+      // Grace: don't drop on brief presence flicker
+      if (e._netSeen && performance.now() - e._netSeen < 4000) continue;
+      removeRemote(e.id);
     }
     applyPresenceScale(state);
     updateRoomChip(FHNet.countPlayers(state));
@@ -1550,13 +1635,13 @@
     } else if (roomChip) {
       roomChip.classList.add("hidden");
     }
-    const toast =
+    showToast(
       roomMode === "open"
-        ? "OPEN WORLD"
+        ? "OPEN WORLD — meet at center"
         : roomMode === "private"
-          ? `ROOM ${FHNet.getRoomCode()}`
-          : "Find the real ones";
-    showToast(toast);
+          ? `ROOM ${FHNet.getRoomCode()} — meet at center`
+          : "Find the real ones"
+    );
   }
 
   async function startOpenWorld() {
@@ -1708,9 +1793,18 @@
         y: p.y,
         angle: p.angle,
       });
-      if (typeof p.x === "number") remote.x = p.x;
-      if (typeof p.y === "number") remote.y = p.y;
+      if (typeof p.x === "number") {
+        remote.netX = p.x;
+        remote.x = p.x;
+      }
+      if (typeof p.y === "number") {
+        remote.netY = p.y;
+        remote.y = p.y;
+      }
       if (typeof p.angle === "number") remote.angle = p.angle;
+      remote.vx = 0;
+      remote.vy = 0;
+      remote._netSeen = performance.now();
       if (p.alive === false && remote.alive) {
         remote.alive = false;
         remote.respawnAt = 1.6;

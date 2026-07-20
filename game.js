@@ -452,16 +452,34 @@
     camera.y = player.y;
   }
 
-  function ensureRemote(id, name) {
+  function ensureRemote(id, name, pos) {
     let e = entities.find((x) => x.id === id);
     if (e) {
       if (name) e.name = name;
+      if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+        e.x = pos.x;
+        e.y = pos.y;
+        if (typeof pos.angle === "number") e.angle = pos.angle;
+      }
       return e;
     }
-    const p = spawnSpread(200);
-    e = makeEntity("remote", name || "guest", p.x, p.y);
+    // Spawn near local player / center so same-room mates aren't lost off-map
+    let x;
+    let y;
+    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      x = pos.x;
+      y = pos.y;
+    } else if (player) {
+      x = clamp(player.x + rand(-120, 120), 80, WORLD - 80);
+      y = clamp(player.y + rand(-120, 120), 80, WORLD - 80);
+    } else {
+      x = WORLD * 0.5 + rand(-80, 80);
+      y = WORLD * 0.5 + rand(-80, 80);
+    }
+    e = makeEntity("remote", name || "guest", x, y);
     e.id = id;
     e.speed = PLAYER_SPEED;
+    if (pos && typeof pos.angle === "number") e.angle = pos.angle;
     entities.push(e);
     if (!scores.find((s) => s.id === id)) {
       scores.push({ id, name: e.name, kills: 0, best: 0, you: false });
@@ -520,7 +538,7 @@
       updateHud();
     }
     if (onlineMode && window.FHNet && id === FHNet.getMyId()) {
-      FHNet.updatePresenceKills(0, row.best || 0);
+      FHNet.updatePresenceKills(0, row.best || 0, player);
     }
   }
 
@@ -624,7 +642,7 @@
           victimName: victimN,
           line,
         });
-        FHNet.updatePresenceKills(me.kills, me.best);
+        FHNet.updatePresenceKills(me.kills, me.best, player);
       }
 
       // global comic feed — no name tags, this is how you know who did what
@@ -1060,6 +1078,15 @@
         const me = myScorePair();
         FHNet.sendState(player, me.kills, me.best);
       }
+      // Presence backup every ~0.4s so late joiners always get positions
+      if (!player._netPresenceAcc) player._netPresenceAcc = 0;
+      player._netPresenceAcc += dt;
+      if (player._netPresenceAcc >= 0.4) {
+        player._netPresenceAcc = 0;
+        const me = myScorePair();
+        FHNet.updatePresenceKills(me.kills, me.best, player);
+        updateRoomChip(FHNet.countPlayers(FHNet.getPresenceState()));
+      }
     }
   }
 
@@ -1457,15 +1484,69 @@
     input.pointerId = null;
   }
 
+  function updateRoomChip(playerCount) {
+    if (!roomChip || !onlineMode || !window.FHNet) return;
+    const code = FHNet.getRoomCode();
+    const n = playerCount || 1;
+    const base = code === FHNet.OPEN_CODE ? "OPEN WORLD" : `ROOM ${code}`;
+    roomChip.textContent = `${base} · ${n}`;
+    roomChip.classList.remove("hidden");
+  }
+
+  function applyNetSync(state) {
+    if (!onlineMode || !running || !window.FHNet) return;
+    const seen = new Set();
+    for (const key of Object.keys(state || {})) {
+      const metas = state[key] || [];
+      for (const m of metas) {
+        if (!m || !m.id || m.id === FHNet.getMyId()) continue;
+        seen.add(m.id);
+        const pos =
+          typeof m.x === "number" && typeof m.y === "number"
+            ? { x: m.x, y: m.y, angle: m.angle }
+            : null;
+        const remote = ensureRemote(m.id, m.name, pos);
+        if (m.alive === false && remote.alive) {
+          remote.alive = false;
+          remote.respawnAt = 1.6;
+        } else if (m.alive !== false) {
+          remote.alive = true;
+        }
+        applyScoreStats(m.id, {
+          kills: typeof m.kills === "number" ? m.kills : undefined,
+          best: typeof m.best === "number" ? m.best : m.kills,
+        });
+        remote._netSeen = performance.now();
+      }
+    }
+    for (const e of [...entities]) {
+      if (e.kind === "remote" && !seen.has(e.id)) removeRemote(e.id);
+    }
+    applyPresenceScale(state);
+    updateRoomChip(FHNet.countPlayers(state));
+    updateHud();
+  }
+
   function startGame(opts = {}) {
     initGame(opts);
     overlay.classList.add("hidden");
     running = true;
-    if (onlineMode && roomChip) {
-      const code = FHNet.getRoomCode();
-      const label = code === FHNet.OPEN_CODE ? "OPEN WORLD" : `ROOM ${code}`;
-      roomChip.textContent = label;
-      roomChip.classList.remove("hidden");
+    if (onlineMode && window.FHNet) {
+      const state = FHNet.getPresenceState ? FHNet.getPresenceState() : {};
+      const count = FHNet.countPlayers(state);
+      lastPlayerCount = count;
+      applyNetSync(state);
+      // force everyone to notice us + pull existing players
+      const me = myScorePair();
+      if (FHNet.announce) FHNet.announce(player, me.kills, me.best);
+      updateRoomChip(count);
+      // second flush shortly after (other client may announce in parallel)
+      setTimeout(() => {
+        if (!running || !onlineMode || !window.FHNet) return;
+        applyNetSync(FHNet.getPresenceState());
+        const again = myScorePair();
+        FHNet.announce(player, again.kills, again.best);
+      }, 350);
     } else if (roomChip) {
       roomChip.classList.add("hidden");
     }
@@ -1499,7 +1580,7 @@
         mode: "open",
         seed: "OPEN",
         name: info.myName,
-        playerCount: 1,
+        playerCount: info.players || 1,
       });
     } catch (err) {
       if (netStatus) netStatus.textContent = String(err.message || err);
@@ -1608,26 +1689,9 @@
     if (!window.FHNet) return;
 
     FHNet.on("sync", (state) => {
+      // Queue is unnecessary — startGame flushes; while running, apply immediately
       if (!onlineMode || !running) return;
-      const seen = new Set();
-      for (const key of Object.keys(state || {})) {
-        const metas = state[key] || [];
-        for (const m of metas) {
-          if (!m || !m.id || m.id === FHNet.getMyId()) continue;
-          seen.add(m.id);
-          const remote = ensureRemote(m.id, m.name);
-          applyScoreStats(m.id, {
-            kills: typeof m.kills === "number" ? m.kills : undefined,
-            best: typeof m.best === "number" ? m.best : m.kills,
-          });
-          remote._netSeen = performance.now();
-        }
-      }
-      for (const e of [...entities]) {
-        if (e.kind === "remote" && !seen.has(e.id)) removeRemote(e.id);
-      }
-      applyPresenceScale(state);
-      updateHud();
+      applyNetSync(state);
     });
 
     FHNet.on("config", (cfg) => {
@@ -1639,10 +1703,14 @@
 
     FHNet.on("state", (p) => {
       if (!onlineMode || !running || !p || !p.id) return;
-      const remote = ensureRemote(p.id, p.name);
-      remote.x = p.x;
-      remote.y = p.y;
-      remote.angle = p.angle;
+      const remote = ensureRemote(p.id, p.name, {
+        x: p.x,
+        y: p.y,
+        angle: p.angle,
+      });
+      if (typeof p.x === "number") remote.x = p.x;
+      if (typeof p.y === "number") remote.y = p.y;
+      if (typeof p.angle === "number") remote.angle = p.angle;
       if (p.alive === false && remote.alive) {
         remote.alive = false;
         remote.respawnAt = 1.6;
@@ -1662,7 +1730,6 @@
       if (typeof p.x === "number") remote.x = p.x;
       if (typeof p.y === "number") remote.y = p.y;
       remote.swingAnim = 0.18;
-      // authority: only killer's client resolves hits; others just show anim
     });
 
     FHNet.on("kill", (p) => {

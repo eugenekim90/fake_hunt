@@ -10,6 +10,7 @@
   let myName = null;
   let online = false;
   let roomMeta = null;
+  let lastPresence = {};
 
   const handlers = {
     join: [],
@@ -71,7 +72,25 @@
     roomCode = null;
     roomMeta = null;
     online = false;
+    lastPresence = {};
     emit("status", { online: false, room: null });
+  }
+
+  function presencePayload(extra = {}) {
+    return {
+      id: myId,
+      name: myName,
+      kills: extra.kills || 0,
+      best: extra.best || 0,
+      x: typeof extra.x === "number" ? extra.x : null,
+      y: typeof extra.y === "number" ? extra.y : null,
+      angle: typeof extra.angle === "number" ? extra.angle : null,
+      alive: extra.alive !== false,
+      joinedAt: Date.now(),
+      host: !!extra.host,
+      open: roomCode === OPEN_CODE,
+      config: roomMeta,
+    };
   }
 
   async function connect(code, name, meta = {}) {
@@ -86,18 +105,28 @@
     roomMeta = meta.config || null;
     online = true;
 
+    // Public realtime room — same topic = same lobby for every client/build
     channel = client.channel(`fh:${roomCode}`, {
-      config: { presence: { key: myId } },
+      config: {
+        broadcast: { self: false, ack: false },
+        presence: { key: myId },
+      },
     });
 
     channel.on("presence", { event: "sync" }, () => {
-      const state = channel.presenceState();
-      emit("sync", state);
+      lastPresence = channel.presenceState() || {};
+      emit("sync", lastPresence);
     });
 
     channel.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.id === myId) return;
       emit("state", payload);
+    });
+
+    channel.on("broadcast", { event: "hello" }, ({ payload }) => {
+      if (!payload || payload.id === myId) return;
+      emit("state", payload);
+      emit("sync", channel.presenceState() || lastPresence);
     });
 
     channel.on("broadcast", { event: "swing" }, ({ payload }) => {
@@ -129,16 +158,14 @@
     await new Promise((resolve, reject) => {
       channel.subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-          await channel.track({
-            id: myId,
-            name: myName,
-            kills: 0,
-            best: 0,
-            joinedAt: Date.now(),
-            host: !!meta.host,
-            open: roomCode === OPEN_CODE,
-            config: meta.config || null,
-          });
+          await channel.track(
+            presencePayload({
+              host: !!meta.host,
+              kills: 0,
+              best: 0,
+            })
+          );
+          lastPresence = channel.presenceState() || {};
           if (meta.host && meta.config) {
             channel.send({ type: "broadcast", event: "config", payload: meta.config });
           }
@@ -150,6 +177,7 @@
             open: roomCode === OPEN_CODE,
             config: meta.config || null,
           });
+          emit("sync", lastPresence);
           resolve();
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           reject(new Error(status));
@@ -157,7 +185,14 @@
       });
     });
 
-    return { roomCode, myId, myName, open: roomCode === OPEN_CODE, config: meta.config || null };
+    return {
+      roomCode,
+      myId,
+      myName,
+      open: roomCode === OPEN_CODE,
+      config: meta.config || null,
+      players: countPlayers(lastPresence),
+    };
   }
 
   async function joinOpenWorld(name) {
@@ -185,17 +220,44 @@
   }
 
   function sendState(player, kills, best) {
-    if (!player || !player.alive) return;
-    send("state", {
+    if (!player) return;
+    const payload = {
       id: myId,
       name: myName,
       x: player.x,
       y: player.y,
       angle: player.angle,
-      alive: player.alive,
+      alive: !!player.alive,
       kills: kills || 0,
       best: best || 0,
-    });
+    };
+    send("state", payload);
+  }
+
+  function announce(player, kills, best) {
+    if (!player || !channel || !online) return;
+    const payload = {
+      id: myId,
+      name: myName,
+      x: player.x,
+      y: player.y,
+      angle: player.angle,
+      alive: !!player.alive,
+      kills: kills || 0,
+      best: best || 0,
+    };
+    send("hello", payload);
+    send("state", payload);
+    channel.track(
+      presencePayload({
+        kills: kills || 0,
+        best: best || 0,
+        x: player.x,
+        y: player.y,
+        angle: player.angle,
+        alive: !!player.alive,
+      })
+    );
   }
 
   function sendSwing(angle, x, y) {
@@ -229,17 +291,18 @@
     send("feed", { id: myId, line });
   }
 
-  function updatePresenceKills(kills, best) {
+  function updatePresenceKills(kills, best, player) {
     if (!channel || !online) return;
-    channel.track({
-      id: myId,
-      name: myName,
-      kills: kills || 0,
-      best: best || 0,
-      joinedAt: Date.now(),
-      open: roomCode === OPEN_CODE,
-      config: roomMeta,
-    });
+    channel.track(
+      presencePayload({
+        kills: kills || 0,
+        best: best || 0,
+        x: player && typeof player.x === "number" ? player.x : null,
+        y: player && typeof player.y === "number" ? player.y : null,
+        angle: player && typeof player.angle === "number" ? player.angle : null,
+        alive: !player || player.alive !== false,
+      })
+    );
   }
 
   function countPlayers(presenceState) {
@@ -261,6 +324,11 @@
     return roomMeta;
   }
 
+  function getPresenceState() {
+    if (channel) lastPresence = channel.presenceState() || lastPresence;
+    return lastPresence;
+  }
+
   window.FHNet = {
     on,
     OPEN_CODE,
@@ -277,6 +345,7 @@
       roomMeta = c;
     },
     sendState,
+    announce,
     sendSwing,
     sendKill,
     sendDeath,
@@ -284,5 +353,6 @@
     updatePresenceKills,
     countPlayers,
     extractRoomConfig,
+    getPresenceState,
   };
 })();

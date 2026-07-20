@@ -460,15 +460,17 @@
 
   function ensureRemote(id, name, pos) {
     let e = entities.find((x) => x.id === id);
+    const hasPos = pos && typeof pos.x === "number" && typeof pos.y === "number";
     if (e) {
       if (name) e.name = name;
-      if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+      if (hasPos) {
         e.netX = pos.x;
         e.netY = pos.y;
         e.x = pos.x;
         e.y = pos.y;
         e.vx = 0;
         e.vy = 0;
+        e._hasNetPos = true;
         if (typeof pos.angle === "number") e.angle = pos.angle;
         e._netSeen = performance.now();
       }
@@ -477,13 +479,16 @@
     const hub = hubPoint();
     let x;
     let y;
-    if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+    if (hasPos) {
       x = pos.x;
       y = pos.y;
+    } else if (player) {
+      // Park beside local player until real coords arrive — never lose them on the map
+      x = player.x + 70;
+      y = player.y;
     } else {
-      // Unknown pos → hub (same meeting point), NOT random map corners
-      x = hub.x + rand(-50, 50);
-      y = hub.y + rand(-50, 50);
+      x = hub.x;
+      y = hub.y;
     }
     e = makeEntity("remote", name || "guest", x, y);
     e.id = id;
@@ -492,12 +497,17 @@
     e.netY = y;
     e.vx = 0;
     e.vy = 0;
+    e._hasNetPos = !!hasPos;
+    e._orbit = rand(0, Math.PI * 2);
     if (pos && typeof pos.angle === "number") e.angle = pos.angle;
     e._netSeen = performance.now();
     entities.push(e);
     if (!scores.find((s) => s.id === id)) {
-      scores.push({ id, name: e.name, kills: 0, best: 0, you: false });
+      scores.push({ id, name: e.name, kills: 0, best: 0, you: false, real: true });
       updateHud();
+    }
+    if (!hasPos) {
+      showToast(`${e.name} is here — beside you`, 1200);
     }
     return e;
   }
@@ -513,7 +523,16 @@
     const you = scores.find((s) => s.you);
     killsEl.textContent = String(you ? you.kills : 0);
 
-    const ranked = [...scores].sort((a, b) => (b.best || 0) - (a.best || 0) || b.kills - a.kills).slice(0, 8);
+    // Online: only real people (you + remotes). Bots were cluttering BEST and looked like "same room".
+    let list = scores;
+    if (onlineMode) {
+      const realIds = new Set(
+        entities.filter((e) => e.kind === "player" || e.kind === "remote").map((e) => e.id)
+      );
+      list = scores.filter((s) => realIds.has(s.id) || s.you);
+    }
+
+    const ranked = [...list].sort((a, b) => (b.best || 0) - (a.best || 0) || b.kills - a.kills).slice(0, 8);
     lbList.innerHTML = ranked
       .map(
         (s, i) =>
@@ -1085,7 +1104,14 @@
         // Network-authoritative — never local-physics them away from real coords
         e.vx = 0;
         e.vy = 0;
-        if (typeof e.netX === "number" && typeof e.netY === "number") {
+        if (!e._hasNetPos && player && player.alive) {
+          // Keep unresolved remotes glued beside you (they're on the leaderboard for a reason)
+          e._orbit = (e._orbit || 0) + dt * 1.2;
+          e.x = player.x + Math.cos(e._orbit) * 78;
+          e.y = player.y + Math.sin(e._orbit) * 78;
+          e.netX = e.x;
+          e.netY = e.y;
+        } else if (typeof e.netX === "number" && typeof e.netY === "number") {
           e.x += (e.netX - e.x) * Math.min(1, 14 * dt);
           e.y += (e.netY - e.y) * Math.min(1, 14 * dt);
         }
@@ -1410,22 +1436,23 @@
     if (!e.alive) return;
     const sx = width / 2 + (e.x - camera.x);
     const sy = height / 2 + (e.y - camera.y);
-    if (sx < -60 || sy < -60 || sx > width + 60 || sy > height + 60) return;
+    const margin = e.kind === "remote" ? 120 : 60;
+    if (sx < -margin || sy < -margin || sx > width + margin || sy > height + margin) return;
     drawStickman(e, sx, sy);
     // Online remotes: show name so you can actually find each other
     if (onlineMode && e.kind === "remote") {
       ctx.save();
-      ctx.font = "600 12px system-ui, sans-serif";
+      ctx.font = "700 14px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillStyle = "rgba(180, 255, 210, 0.95)";
-      ctx.strokeStyle = "rgba(0,0,0,0.55)";
-      ctx.lineWidth = 3;
-      ctx.strokeText(e.name || "player", sx, sy - 56);
-      ctx.fillText(e.name || "player", sx, sy - 56);
+      ctx.fillStyle = "#b8ffd0";
+      ctx.strokeStyle = "rgba(0,0,0,0.75)";
+      ctx.lineWidth = 4;
+      ctx.strokeText(e.name || "player", sx, sy - 58);
+      ctx.fillText(e.name || "player", sx, sy - 58);
       ctx.beginPath();
-      ctx.arc(sx, sy + 10, 16, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(120, 220, 170, 0.55)";
-      ctx.lineWidth = 2;
+      ctx.arc(sx, sy + 10, 20, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(141, 255, 176, 0.85)";
+      ctx.lineWidth = 3;
       ctx.stroke();
       ctx.restore();
     }
@@ -1587,6 +1614,7 @@
             ? { x: m.x, y: m.y, angle: m.angle }
             : null;
         const remote = ensureRemote(m.id, m.name, pos);
+        if (pos) remote._hasNetPos = true;
         if (m.alive === false && remote.alive) {
           remote.alive = false;
           remote.respawnAt = 1.6;
@@ -1796,10 +1824,12 @@
       if (typeof p.x === "number") {
         remote.netX = p.x;
         remote.x = p.x;
+        remote._hasNetPos = true;
       }
       if (typeof p.y === "number") {
         remote.netY = p.y;
         remote.y = p.y;
+        remote._hasNetPos = true;
       }
       if (typeof p.angle === "number") remote.angle = p.angle;
       remote.vx = 0;
